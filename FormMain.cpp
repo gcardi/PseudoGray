@@ -4,6 +4,7 @@
 #pragma hdrstop
 
 #include <algorithm>
+#include <array>
 
 #include <System.Win.ComObj.hpp>
 #include <System.IOUtils.hpp>
@@ -12,7 +13,9 @@
 #include "FormMain.h"
 
 using std::make_unique;
-using std::min;
+//using std::min;
+using std::clamp;
+using std::array;
 
 //---------------------------------------------------------------------------
 #pragma package(smart_init)
@@ -26,6 +29,10 @@ __fastcall TfrmMain::TfrmMain(TComponent* Owner)
     imgGrey->ControlStyle = imgGrey->ControlStyle << csOpaque;
     imgPseudoGrey->ControlStyle = imgPseudoGrey->ControlStyle << csOpaque;
     paintboxOriginal->ControlStyle = paintboxOriginal->ControlStyle << csOpaque;
+    tbshtOriginal->ControlStyle = tbshtOriginal->ControlStyle << csOpaque;
+    ScrollBox1->OnScroll = PictureScrolled;
+    ScrollBox2->OnScroll = PictureScrolled;
+    ScrollBox3->OnScroll = PictureScrolled;
 }
 //---------------------------------------------------------------------------
 
@@ -96,31 +103,31 @@ void TfrmMain::LoadImage( String FileName )
                 BmpGrayLine[x].rgbtRed = Gray8;
                 BmpGrayLine[x].rgbtGreen = Gray8;
 
-                BYTE B = 0;
-                Byte R = 0;
-                BYTE G = 0;
+                int B;
+                int R;
+                int G;
 
                 switch ( Gray12 % 16 ) {
-                    case  0:              ;        break;
-                    case  1:              ; B = 1; break;
-                    case  2:              ; B = 2; break;
-                    case  3: R = 1;       ;        break;
-                    case  4: R = 1;       ; B = 1; break;
-                    case  5: R = 1;       ; B = 1; break;
-                    case  6: R = 1;       ; B = 2; break;
-                    case  7: R = 2;       ;        break;
-                    case  8: R = 2;       ; B = 1; break;
-                    case  9: R = 2;       ; B = 2; break;
-                    case 10: R = 2;       ; B = 2; break;
-                    case 11:        G = 1 ;        break;
-                    case 12:        G = 1 ; B = 1; break;
-                    case 13:        G = 1 ; B = 2; break;
-                    case 14:        G = 1 ; B = 2; break;
-                    case 15: R = 1; G = 1 ;        break;
+                    case  0: R = -1; G = -1 ; B = -1; break;
+                    case  1: R = -1; G = -1 ; B =  0; break;
+                    case  2: R = -1; G = -1 ; B =  1; break;
+                    case  3: R =  0; G = -1 ; B = -1; break;
+                    case  4: R =  0; G = -1 ; B =  0; break;
+                    case  5: R =  0; G = -1 ; B =  0; break;
+                    case  6: R =  0; G = -1 ; B =  1; break;
+                    case  7: R =  1; G = -1 ; B = -1; break;
+                    case  8: R =  1; G = -1 ; B =  0; break;
+                    case  9: R =  1; G = -1 ; B =  1; break;
+                    case 10: R =  1; G = -1 ; B =  1; break;
+                    case 11: R = -1; G =  0 ; B = -1; break;
+                    case 12: R = -1; G =  0 ; B =  0; break;
+                    case 13: R = -1; G =  0 ; B =  1; break;
+                    case 14: R = -1; G =  0 ; B =  1; break;
+                    case 15: R =  0; G =  0 ; B = -1; break;
                 }
-                BmpPseudoGrayLine[x].rgbtBlue = min( Gray8 + B, 255 );
-                BmpPseudoGrayLine[x].rgbtRed = min( Gray8 + R, 255 );
-                BmpPseudoGrayLine[x].rgbtGreen = min( Gray8 + G, 255 );
+                BmpPseudoGrayLine[x].rgbtBlue = clamp( Gray8 + B, 0, 255 );
+                BmpPseudoGrayLine[x].rgbtRed = clamp( Gray8 + R, 0, 255 );
+                BmpPseudoGrayLine[x].rgbtGreen = clamp( Gray8 + G, 0, 255 );
             }
         }
         imgPseudoGrey->Picture->Assign( BmpPseudoGray.get() );
@@ -210,6 +217,19 @@ void __fastcall TfrmMain::ImgMouseMove(TObject *Sender, TShiftState Shift, int X
 void __fastcall TfrmMain::tbshtOriginalResize(TObject *Sender)
 {
     PrepareScaledWICImage();
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TfrmMain::PictureScrolled( TObject *Sender )
+{
+    auto& SenderScrollBox = static_cast<Alt::TScrollBox&>( *Sender );
+    array<Alt::TScrollBox*,3> ScrollBoxes { ScrollBox1, ScrollBox2, ScrollBox3 };
+    for ( auto ScrollBox : ScrollBoxes ) {
+        if ( &SenderScrollBox != ScrollBox ) {
+            ScrollBox->HorzScrollBar->Position = SenderScrollBox.HorzScrollBar->Position;
+            ScrollBox->VertScrollBar->Position = SenderScrollBox.VertScrollBar->Position;
+        }
+    }
 }
 //---------------------------------------------------------------------------
 

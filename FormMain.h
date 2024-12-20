@@ -22,6 +22,38 @@
 #include <memory>
 
 //---------------------------------------------------------------------------
+namespace Alt {
+//---------------------------------------------------------------------------
+
+class TScrollBox : public Vcl::Forms::TScrollBox {
+private:
+	using inherited = Vcl::Forms::TScrollBox;
+
+    TNotifyEvent onScroll_ { nullptr };
+protected:
+	virtual void __fastcall WndProc(Winapi::Messages::TMessage &Message) override {
+	    inherited::WndProc( Message );
+        switch ( Message.Msg ) {
+            case WM_HSCROLL:
+            case WM_VSCROLL:
+                if ( onScroll_ ) {
+                    onScroll_( this );
+                }
+                break;
+            default:
+                break;
+        }
+    }
+public:
+	__fastcall virtual TScrollBox(System::Classes::TComponent* AOwner) override
+      : inherited( AOwner ) {}
+    __property TNotifyEvent OnScroll = { read = onScroll_, write = onScroll_ };
+};
+
+//---------------------------------------------------------------------------
+} // End of namespace Alt
+//---------------------------------------------------------------------------
+
 class TfrmMain : public TForm
 {
 __published:	// IDE-managed Components
@@ -39,15 +71,14 @@ __published:	// IDE-managed Components
     TPanel *Panel1;
     TLabel *lblGreyImageInfo;
     TFileOpenDialog *FileOpenDialog1;
-    TScrollBox *ScrollBox1;
-    TScrollBox *ScrollBox2;
-    TScrollBox *ScrollBox3;
+    Alt::TScrollBox *ScrollBox1;
+    Alt::TScrollBox *ScrollBox2;
+    Alt::TScrollBox *ScrollBox3;
     void __fastcall actFileOpenExecute(TObject *Sender);
     void __fastcall paintboxOriginalPaint(TObject *Sender);
     void __fastcall ImgMouseLeave(TObject *Sender);
     void __fastcall ImgMouseMove(TObject *Sender, TShiftState Shift, int X, int Y);
     void __fastcall tbshtOriginalResize(TObject *Sender);
-
 private:	// User declarations
     std::unique_ptr<TWICImage> img_;
     std::unique_ptr<TWICImage> scaledImg_;
@@ -55,6 +86,7 @@ private:	// User declarations
 
     void LoadImage( String FileName );
     void PrepareScaledWICImage();
+    void __fastcall PictureScrolled( TObject *Sender );
 public:		// User declarations
     __fastcall TfrmMain(TComponent* Owner);
 };
