@@ -5,6 +5,9 @@
 
 #include <algorithm>
 #include <array>
+#include <future>
+#include <thread>
+#include <vector>
 
 #include <System.Win.ComObj.hpp>
 #include <System.IOUtils.hpp>
@@ -43,6 +46,133 @@ void __fastcall TfrmMain::actFileOpenExecute(TObject *Sender)
 }
 //---------------------------------------------------------------------------
 
+static constexpr array<int, 16> OffsetR {
+    -1, -1, -1,  0,  0,  0,  0,  1,
+     1,  1,  1, -1, -1, -1, -1,  0
+};
+
+static constexpr array<int, 16> OffsetG {
+    -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1,  0,  0,  0,  0,  0
+};
+
+static constexpr array<int, 16> OffsetB {
+    -1,  0,  1, -1,  0,  0,  1, -1,
+     0,  1,  1, -1,  0,  1,  1, -1
+};
+//---------------------------------------------------------------------------
+
+inline BYTE ClampByte( int Value )
+{
+    return static_cast<BYTE>( clamp( Value, 0, 255 ) );
+}
+//---------------------------------------------------------------------------
+
+inline RGBQUAD MakeBgra( BYTE B, BYTE G, BYTE R )
+{
+    RGBQUAD Pixel {};
+    Pixel.rgbBlue = B;
+    Pixel.rgbGreen = G;
+    Pixel.rgbRed = R;
+    Pixel.rgbReserved = 0xFF;
+    return Pixel;
+}
+//---------------------------------------------------------------------------
+
+void ConvertGray16RowsToDisplayBitmaps(
+    BYTE *Data,
+    UINT SourceStride,
+    const std::vector<RGBQUAD*>& PseudoGrayRows,
+    const std::vector<RGBQUAD*>& GrayRows,
+    int Width,
+    int FirstRow,
+    int LastRow
+)
+{
+    for ( int y = FirstRow ; y < LastRow ; ++y ) {
+        const WORD* const ImgLine =
+            reinterpret_cast<const WORD*>( Data + SourceStride * y );
+        RGBQUAD* const BmpPseudoGrayLine = PseudoGrayRows[y];
+        RGBQUAD* const BmpGrayLine = GrayRows[y];
+
+        for ( int x = 0 ; x < Width ; ++x ) {
+            const WORD Gray16 = ImgLine[x];
+            const WORD Gray12 = Gray16 >> 4;
+            const BYTE Gray8 = static_cast<BYTE>( Gray16 >> 8 );
+            const int OffsetIndex = Gray12 & 0x0F;
+
+            BmpGrayLine[x] = MakeBgra( Gray8, Gray8, Gray8 );
+            BmpPseudoGrayLine[x] = MakeBgra(
+                ClampByte( Gray8 + OffsetB[OffsetIndex] ),
+                ClampByte( Gray8 + OffsetG[OffsetIndex] ),
+                ClampByte( Gray8 + OffsetR[OffsetIndex] )
+            );
+        }
+    }
+}
+//---------------------------------------------------------------------------
+
+void ConvertGray16ToDisplayBitmaps(
+    BYTE *Data,
+    UINT SourceStride,
+    TBitmap& BmpPseudoGray,
+    TBitmap& BmpGray,
+    int Width,
+    int Height
+)
+{
+    std::vector<RGBQUAD*> PseudoGrayRows( Height );
+    std::vector<RGBQUAD*> GrayRows( Height );
+    for ( int y = 0 ; y < Height ; ++y ) {
+        PseudoGrayRows[y] = static_cast<RGBQUAD*>( BmpPseudoGray.ScanLine[y] );
+        GrayRows[y] = static_cast<RGBQUAD*>( BmpGray.ScanLine[y] );
+    }
+
+    const unsigned int HardwareThreads = std::thread::hardware_concurrency();
+    const int MaxTasks = HardwareThreads > 0
+        ? static_cast<int>( HardwareThreads )
+        : 1;
+    const int TaskCount = clamp( Height / 64, 1, MaxTasks );
+    const int RowsPerTask = ( Height + TaskCount - 1 ) / TaskCount;
+
+    std::vector<std::future<void>> Tasks;
+    Tasks.reserve( TaskCount > 0 ? TaskCount - 1 : 0 );
+
+    for ( int Task = 1 ; Task < TaskCount ; ++Task ) {
+        const int FirstRow = Task * RowsPerTask;
+        const int LastRow = std::min( FirstRow + RowsPerTask, Height );
+        Tasks.emplace_back(
+            std::async(
+                std::launch::async,
+                ConvertGray16RowsToDisplayBitmaps,
+                Data,
+                SourceStride,
+                std::cref( PseudoGrayRows ),
+                std::cref( GrayRows ),
+                Width,
+                FirstRow,
+                LastRow
+            )
+        );
+    }
+
+    const int MainLastRow = std::min( RowsPerTask, Height );
+    ConvertGray16RowsToDisplayBitmaps(
+        Data,
+        SourceStride,
+        PseudoGrayRows,
+        GrayRows,
+        Width,
+        0,
+        MainLastRow
+    );
+
+    for ( auto& Task : Tasks ) {
+        Task.get();
+    }
+}
+//---------------------------------------------------------------------------
+
 void TfrmMain::LoadImage( String FileName )
 {
     auto Img = make_unique<TWICImage>();
@@ -67,12 +197,12 @@ void TfrmMain::LoadImage( String FileName )
         paintboxOriginal->ClientHeight = ImgHeight;
 
         auto BmpPseudoGray = make_unique<TBitmap>();
-        BmpPseudoGray->PixelFormat = pf24bit;
+        BmpPseudoGray->PixelFormat = pf32bit;
         BmpPseudoGray->Width = ImgWidth;
         BmpPseudoGray->Height = ImgHeight;
 
         auto BmpGray = make_unique<TBitmap>();
-        BmpGray->PixelFormat = pf24bit;
+        BmpGray->PixelFormat = pf32bit;
         BmpGray->Width = ImgWidth;
         BmpGray->Height = ImgHeight;
 
@@ -82,53 +212,14 @@ void TfrmMain::LoadImage( String FileName )
         OleCheck( pLock->GetDataPointer( &BufferSize, &Data ) );
         OleCheck( pLock->GetStride( &Stride ) );
 
-        // This algorithm can generate a pseudo-grayscale with a depth
-        // of 11.77 bits, that is, approximately 3481 perceived shades
-        // of pseudo-gray compared to the 256 real shades of a normal
-        // grayscale image.
-
-        for ( int y = 0 ; y < ImgHeight ; ++y ) {
-            const WORD* const ImgLine = reinterpret_cast<WORD*>( Data + Stride * y );
-            RGBTRIPLE* const BmpPseudoGrayLine =
-                static_cast<RGBTRIPLE*>( BmpPseudoGray->ScanLine[y] );
-            RGBTRIPLE* const BmpGrayLine =
-                static_cast<RGBTRIPLE*>( BmpGray->ScanLine[y] );
-            for ( int x = 0 ; x < ImgWidth ; ++x ) {
-                const WORD Gray16 = ImgLine[x];
-                const WORD Gray12 = Gray16 >> 4;
-                const WORD Gray8 = Gray16 >> 8;
-
-                BmpGrayLine[x].rgbtBlue = Gray8;
-                BmpGrayLine[x].rgbtRed = Gray8;
-                BmpGrayLine[x].rgbtGreen = Gray8;
-
-                int B;
-                int R;
-                int G;
-
-                switch ( Gray12 % 16 ) {
-                    case  0: R = -1; G = -1 ; B = -1; break;
-                    case  1: R = -1; G = -1 ; B =  0; break;
-                    case  2: R = -1; G = -1 ; B =  1; break;
-                    case  3: R =  0; G = -1 ; B = -1; break;
-                    case  4: R =  0; G = -1 ; B =  0; break;
-                    case  5: R =  0; G = -1 ; B =  0; break;
-                    case  6: R =  0; G = -1 ; B =  1; break;
-                    case  7: R =  1; G = -1 ; B = -1; break;
-                    case  8: R =  1; G = -1 ; B =  0; break;
-                    case  9: R =  1; G = -1 ; B =  1; break;
-                    case 10: R =  1; G = -1 ; B =  1; break;
-                    case 11: R = -1; G =  0 ; B = -1; break;
-                    case 12: R = -1; G =  0 ; B =  0; break;
-                    case 13: R = -1; G =  0 ; B =  1; break;
-                    case 14: R = -1; G =  0 ; B =  1; break;
-                    case 15: R =  0; G =  0 ; B = -1; break;
-                }
-                BmpPseudoGrayLine[x].rgbtBlue = clamp( Gray8 + B, 0, 255 );
-                BmpPseudoGrayLine[x].rgbtRed = clamp( Gray8 + R, 0, 255 );
-                BmpPseudoGrayLine[x].rgbtGreen = clamp( Gray8 + G, 0, 255 );
-            }
-        }
+        ConvertGray16ToDisplayBitmaps(
+            Data,
+            Stride,
+            *BmpPseudoGray,
+            *BmpGray,
+            ImgWidth,
+            ImgHeight
+        );
         imgPseudoGrey->Picture->Assign( BmpPseudoGray.get() );
         imgGrey->Picture->Assign( BmpGray.get() );
         img_ = std::move( Img );
